@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # yt-dlp config
 # ---------------------------------------------------------------------------
 
-_cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "")
+_cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "cookies.txt")
 _has_cookies = bool(_cookies_file and os.path.isfile(_cookies_file))
 
 if _cookies_file and not _has_cookies:
