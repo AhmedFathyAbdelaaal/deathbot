@@ -29,7 +29,14 @@ YTDL_OPTIONS: dict = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
+    # Use the iOS client to bypass YouTube's bot-detection without cookies
+    "extractor_args": {"youtube": {"player_client": ["ios"]}},
 }
+
+# Optional: mount a Netscape-format cookies file and set YOUTUBE_COOKIES_FILE=/path/in/container
+_cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "")
+if _cookies_file and os.path.isfile(_cookies_file):
+    YTDL_OPTIONS["cookiefile"] = _cookies_file
 
 FFMPEG_OPTIONS: dict = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",

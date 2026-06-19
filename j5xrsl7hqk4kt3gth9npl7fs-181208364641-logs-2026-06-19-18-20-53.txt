@@ -1,0 +1,98 @@
+asyncio.run(main())
+File "/usr/local/lib/python3.11/asyncio/runners.py", line 190, in run
+return runner.run(main)
+^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run
+return self._loop.run_until_complete(task)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+return future.result()
+^^^^^^^^^^^^^^^
+File "/app/bot.py", line 66, in main
+await bot.start(token)
+File "/usr/local/lib/python3.11/site-packages/discord/client.py", line 851, in start
+await self.connect(reconnect=reconnect)
+File "/usr/local/lib/python3.11/site-packages/discord/client.py", line 775, in connect
+raise PrivilegedIntentsRequired(exc.shard_id) from None
+discord.errors.PrivilegedIntentsRequired: Shard ID None is requesting privileged intents that have not been explicitly enabled in the developer portal. It is recommended to go to https://discord.com/developers/applications/ and explicitly enable the privileged intents within your application's page. If this is not possible, then consider disabling the privileged intents instead.
+2026-06-19 18:16:42,946 [INFO] __main__: Loaded cog: cogs.jokes
+2026-06-19 18:16:43,121 [INFO] __main__: Loaded cog: cogs.music
+2026-06-19 18:16:43,121 [INFO] __main__: Loaded cog: cogs.feedback
+2026-06-19 18:16:43,122 [INFO] discord.client: logging in using static token
+Traceback (most recent call last):
+File "/app/bot.py", line 70, in
+asyncio.run(main())
+File "/usr/local/lib/python3.11/asyncio/runners.py", line 190, in run
+return runner.run(main)
+^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run
+return self._loop.run_until_complete(task)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+return future.result()
+^^^^^^^^^^^^^^^
+File "/app/bot.py", line 66, in main
+await bot.start(token)
+File "/usr/local/lib/python3.11/site-packages/discord/client.py", line 851, in start
+await self.connect(reconnect=reconnect)
+File "/usr/local/lib/python3.11/site-packages/discord/client.py", line 775, in connect
+raise PrivilegedIntentsRequired(exc.shard_id) from None
+discord.errors.PrivilegedIntentsRequired: Shard ID None is requesting privileged intents that have not been explicitly enabled in the developer portal. It is recommended to go to https://discord.com/developers/applications/ and explicitly enable the privileged intents within your application's page. If this is not possible, then consider disabling the privileged intents instead.
+2026-06-19 18:17:45,738 [INFO] __main__: Loaded cog: cogs.jokes
+2026-06-19 18:17:45,917 [INFO] __main__: Loaded cog: cogs.music
+2026-06-19 18:17:45,918 [INFO] __main__: Loaded cog: cogs.feedback
+2026-06-19 18:17:45,918 [INFO] discord.client: logging in using static token
+Traceback (most recent call last):
+File "/app/bot.py", line 70, in
+asyncio.run(main())
+File "/usr/local/lib/python3.11/asyncio/runners.py", line 190, in run
+return runner.run(main)
+^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.11/asyncio/runners.py", line 118, in run
+return self._loop.run_until_complete(task)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+return future.result()
+^^^^^^^^^^^^^^^
+File "/app/bot.py", line 66, in main
+await bot.start(token)
+File "/usr/local/lib/python3.11/site-packages/discord/client.py", line 851, in start
+await self.connect(reconnect=reconnect)
+File "/usr/local/lib/python3.11/site-packages/discord/client.py", line 775, in connect
+raise PrivilegedIntentsRequired(exc.shard_id) from None
+discord.errors.PrivilegedIntentsRequired: Shard ID None is requesting privileged intents that have not been explicitly enabled in the developer portal. It is recommended to go to https://discord.com/developers/applications/ and explicitly enable the privileged intents within your application's page. If this is not possible, then consider disabling the privileged intents instead.
+2026-06-19 18:18:48,291 [INFO] __main__: Loaded cog: cogs.jokes
+2026-06-19 18:18:48,478 [INFO] __main__: Loaded cog: cogs.music
+2026-06-19 18:18:48,479 [INFO] __main__: Loaded cog: cogs.feedback
+2026-06-19 18:18:48,479 [INFO] discord.client: logging in using static token
+2026-06-19 18:18:50,189 [INFO] discord.gateway: Shard ID None has connected to Gateway (Session ID: 23d0d469a73855fa736bdbc09ad821d1).
+2026-06-19 18:18:52,192 [INFO] __main__: Logged in as Death Bot#0433 (ID: 1517590502873108640)
+2026-06-19 18:18:52,641 [INFO] __main__: Synced 14 slash command(s)
+2026-06-19 18:19:33,883 [ERROR] cogs.music: Music command error: Command 'play' raised an exception: ValueError: invalid literal for int() with base 10: '180=180'
+Traceback (most recent call last):
+File "/usr/local/lib/python3.11/site-packages/discord/app_commands/commands.py", line 858, in _do_call
+return await self._callback(self.binding, interaction, **params) # type: ignore
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/app/cogs/music.py", line 510, in play
+state = await self._ensure_voice(interaction)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/app/cogs/music.py", line 489, in _ensure_voice
+state = self._state(interaction.guild)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/app/cogs/music.py", line 457, in _state
+self._states[guild.id] = GuildMusicState(self.bot, guild)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/app/cogs/music.py", line 282, in __init__
+self._inactivity_timeout: int = int(os.getenv("INACTIVITY_TIMEOUT", "180"))
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: '180=180'
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+File "/usr/local/lib/python3.11/site-packages/discord/app_commands/tree.py", line 1302, in _call
+await command._invoke_with_namespace(interaction, namespace)
+File "/usr/local/lib/python3.11/site-packages/discord/app_commands/commands.py", line 884, in _invoke_with_namespace
+return await self._do_call(interaction, transformed_values)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.11/site-packages/discord/app_commands/commands.py", line 877, in _do_call
+raise CommandInvokeError(self, e) from e
+discord.app_commands.errors.CommandInvokeError: Command 'play' raised an exception: ValueError: invalid literal for int() with base 10: '180=180'
