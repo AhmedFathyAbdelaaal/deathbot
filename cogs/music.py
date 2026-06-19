@@ -22,8 +22,15 @@ logger = logging.getLogger(__name__)
 _cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "")
 _has_cookies = bool(_cookies_file and os.path.isfile(_cookies_file))
 
+if _cookies_file and not _has_cookies:
+    logger.warning(
+        f"YOUTUBE_COOKIES_FILE is set to '{_cookies_file}' but the file was NOT found. "
+        "Falling back to iOS player client. Check the path inside the container."
+    )
+
 YTDL_OPTIONS: dict = {
-    "format": "bestaudio/best",
+    # Explicit fallback chain works with both web client and iOS player client
+    "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best",
     "restrictfilenames": True,
     "noplaylist": True,
     "nocheckcertificate": True,
@@ -35,10 +42,10 @@ YTDL_OPTIONS: dict = {
 }
 
 if _has_cookies:
-    # Web client with cookies — full format availability, no bot block
     YTDL_OPTIONS["cookiefile"] = _cookies_file
+    logger.info(f"YouTube cookies loaded from: {_cookies_file}")
 else:
-    # No cookies — use iOS client to bypass YouTube bot-detection
+    # No cookies — iOS player client bypasses bot-detection
     YTDL_OPTIONS["extractor_args"] = {"youtube": {"player_client": ["ios"]}}
 
 FFMPEG_OPTIONS: dict = {
