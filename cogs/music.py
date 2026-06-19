@@ -37,8 +37,9 @@ YTDL_OPTIONS: dict = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
-    # Android client bypasses YouTube bot-detection on servers and returns full audio streams
-    "extractor_args": {"youtube": {"player_client": ["android"]}},
+    # tv_embedded doesn't trigger YouTube's sign-in/bot check on server IPs.
+    # Remaining clients are tried in order as fallbacks.
+    "extractor_args": {"youtube": {"player_client": ["tv_embedded", "android", "ios"]}},
 }
 
 if _has_cookies:
