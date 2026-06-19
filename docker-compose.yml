@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Persist jokes.json edits across container restarts
+      - ./data:/app/data
