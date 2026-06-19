@@ -24,12 +24,10 @@ _has_cookies = bool(_cookies_file and os.path.isfile(_cookies_file))
 
 if _cookies_file and not _has_cookies:
     logger.warning(
-        f"YOUTUBE_COOKIES_FILE is set to '{_cookies_file}' but the file was NOT found. "
-        "Falling back to iOS player client. Check the path inside the container."
+        f"YOUTUBE_COOKIES_FILE='{_cookies_file}' but file not found inside container — cookies disabled."
     )
 
 YTDL_OPTIONS: dict = {
-    # Explicit fallback chain works with both web client and iOS player client
     "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best",
     "restrictfilenames": True,
     "noplaylist": True,
@@ -39,14 +37,16 @@ YTDL_OPTIONS: dict = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
+    # Android client bypasses YouTube bot-detection on servers and returns full audio streams
+    "extractor_args": {"youtube": {"player_client": ["android"]}},
 }
 
 if _has_cookies:
+    # Cookies are optional extra auth on top of the player client bypass
     YTDL_OPTIONS["cookiefile"] = _cookies_file
     logger.info(f"YouTube cookies loaded from: {_cookies_file}")
 else:
-    # No cookies — iOS player client bypasses bot-detection
-    YTDL_OPTIONS["extractor_args"] = {"youtube": {"player_client": ["ios"]}}
+    logger.info("No YouTube cookies configured — using Android player client bypass only.")
 
 FFMPEG_OPTIONS: dict = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
