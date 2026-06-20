@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 # yt-dlp config
 # ---------------------------------------------------------------------------
 
-_cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "cookies.txt")
+_cookies_file = os.getenv("YOUTUBE_COOKIES_FILE", "")
 _has_cookies = bool(_cookies_file and os.path.isfile(_cookies_file))
+_proxy = os.getenv("YTDLP_PROXY") or None
 
 if _cookies_file and not _has_cookies:
     logger.warning(
@@ -37,19 +38,20 @@ YTDL_OPTIONS: dict = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
-    # tv_embedded doesn't trigger YouTube's sign-in/bot check on server IPs.
-    # Remaining clients are tried in order as fallbacks.
-    "extractor_args": {"youtube": {"player_client": ["tv_embedded", "android", "ios"]}},
-    'proxy': os.getenv('YTDLP_PROXY'),
-    'cookiefile': '/app/cookies.txt',
 }
 
+if _proxy:
+    # Proxy routes around YouTube's IP block — web client gives full format availability
+    YTDL_OPTIONS["proxy"] = _proxy
+    logger.info(f"yt-dlp proxy configured: {_proxy}")
+else:
+    # No proxy — use player client chain to bypass bot detection without cookies
+    YTDL_OPTIONS["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "android", "ios"]}}
+    logger.info("No proxy configured — using player client bypass.")
+
 if _has_cookies:
-    # Cookies are optional extra auth on top of the player client bypass
     YTDL_OPTIONS["cookiefile"] = _cookies_file
     logger.info(f"YouTube cookies loaded from: {_cookies_file}")
-else:
-    logger.info("No YouTube cookies configured — using Android player client bypass only.")
 
 FFMPEG_OPTIONS: dict = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
