@@ -76,13 +76,18 @@ if _ytdlp_proxy_url:
 # formats a given client is allowed to see, so this is needed either way.
 YTDL_OPTIONS["extractor_args"] = {
     "youtube": {
-        "player_client": ["tv", "web_safari", "default"],
+        # web_safari is prioritized because it's the client our bgutil PO
+        # token provider successfully generates tokens for. Mixing it with
+        # "tv" caused yt-dlp to select tv's stream format (which has no
+        # matching token) while the token was issued for web_safari,
+        # producing a 403 even though token generation succeeded.
+        "player_client": ["web_safari"],
     },
     "youtubepot-bgutilhttp": {
         "base_url": [os.getenv("BGUTIL_POT_URL", "http://bgutil-pot:4416")],
     },
 }
-logger.info("yt-dlp player client chain: tv, web_safari, default")
+logger.info("yt-dlp player client chain: web_safari")
 logger.info(f"bgutil POT provider URL: {os.getenv('BGUTIL_POT_URL', 'http://bgutil-pot:4416')}")
 
 if shutil.which("deno") is None:
