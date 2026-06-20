@@ -31,7 +31,14 @@ if _cookies_file and not _has_cookies:
     )
 
 YTDL_OPTIONS: dict = {
-    "format": "bestaudio/best",
+    # Adaptive audio-only formats (itag 251, etc.) are the ones being SABR-
+    # walled and require a per-fragment token that frequently still 403s even
+    # when the initial PO token succeeds. Progressive (combined audio+video)
+    # formats like itag 18 are pre-muxed single-file streams that have so far
+    # avoided this issue, at the cost of downloading unused video data. We
+    # discard the video stream at playback via FFmpeg's -vn flag, so only the
+    # bandwidth cost is paid, not a quality or storage cost.
+    "format": "best[acodec!=none]/bestaudio/best",
     "restrictfilenames": True,
     "noplaylist": True,
     "nocheckcertificate": True,
@@ -76,18 +83,18 @@ if _ytdlp_proxy_url:
 # formats a given client is allowed to see, so this is needed either way.
 YTDL_OPTIONS["extractor_args"] = {
     "youtube": {
-        # web_safari is prioritized because it's the client our bgutil PO
-        # token provider successfully generates tokens for. Mixing it with
-        # "tv" caused yt-dlp to select tv's stream format (which has no
-        # matching token) while the token was issued for web_safari,
-        # producing a 403 even though token generation succeeded.
-        "player_client": ["web_safari"],
+        # mweb is the client called out by yt-dlp maintainers as still
+        # exposing non-SABR formats when paired with a PO token, unlike
+        # web/web_safari which YouTube has been progressively SABR-walling
+        # since early 2025. web_safari kept as fallback since it's already
+        # proven to successfully retrieve tokens via bgutil in our setup.
+        "player_client": ["mweb", "web_safari"],
     },
     "youtubepot-bgutilhttp": {
         "base_url": [os.getenv("BGUTIL_POT_URL", "http://bgutil-pot:4416")],
     },
 }
-logger.info("yt-dlp player client chain: web_safari")
+logger.info("yt-dlp player client chain: mweb, web_safari")
 logger.info(f"bgutil POT provider URL: {os.getenv('BGUTIL_POT_URL', 'http://bgutil-pot:4416')}")
 
 if shutil.which("deno") is None:
