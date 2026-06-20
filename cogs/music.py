@@ -45,7 +45,7 @@ YTDL_OPTIONS: dict = {
     "ignoreerrors": False,
     "quiet": True,
     "no_warnings": True,
-    "default_search": "ytsearch",
+    "default_search": "scsearch",
     "source_address": "0.0.0.0",
     "verbose": True,
 }
@@ -132,6 +132,9 @@ LOOP_QUEUE = 2
 LOOP_LABELS = {LOOP_OFF: "Off", LOOP_TRACK: "Track", LOOP_QUEUE: "Queue"}
 
 SPOTIFY_RE = re.compile(r"https?://open\.spotify\.com/(track|album|playlist)/([A-Za-z0-9]+)")
+DIRECT_AUDIO_RE = re.compile(r"\.(mp3|wav|m4a|ogg|flac|opus|aac)(\?.*)?$", re.IGNORECASE)
+SOUNDCLOUD_RE = re.compile(r"https?://(www\.)?soundcloud\.com/", re.IGNORECASE)
+YOUTUBE_RE = re.compile(r"https?://(www\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +230,49 @@ async def _ytdl_extract(query: str) -> dict:
     return await loop.run_in_executor(None, _extract)
 
 
+async def _ytdl_extract_with_fallback(query: str) -> dict:
+    """
+    Resolve a query with source priority: direct URL > explicit platform URL
+    (played as-is) > SoundCloud search > YouTube search (best-effort fallback).
+
+    YouTube is treated as unreliable due to ongoing SABR/PO-token enforcement
+    that intermittently blocks playback even when extraction succeeds. We
+    only reach for it when no SoundCloud result is available.
+    """
+    is_direct_audio = bool(DIRECT_AUDIO_RE.search(query))
+    is_explicit_url = bool(SOUNDCLOUD_RE.search(query) or YOUTUBE_RE.search(query) or is_direct_audio)
+
+    if is_explicit_url:
+        # User gave a specific link — respect it, don't second-guess the source.
+        return await _ytdl_extract(query)
+
+    # Plain text query — try SoundCloud first, since it isn't subject to the
+    # SABR/PO-token instability YouTube has had throughout 2026.
+    try:
+        sc_data = await _ytdl_extract(f"scsearch:{query}")
+        logger.info(f"Resolved '{query}' via SoundCloud")
+        return sc_data
+    except Exception as sc_error:
+        logger.warning(f"SoundCloud search failed for '{query}': {sc_error}. Falling back to YouTube.")
+
+    # Best-effort YouTube fallback — may fail due to upstream SABR issues.
+    try:
+        yt_data = await _ytdl_extract(f"ytsearch:{query}")
+        logger.info(f"Resolved '{query}' via YouTube (fallback)")
+        return yt_data
+    except Exception as yt_error:
+        logger.error(f"YouTube fallback also failed for '{query}': {yt_error}")
+        raise ValueError(
+            f"Could not find '{query}' on SoundCloud or YouTube. "
+            f"YouTube may currently be unavailable due to platform restrictions."
+        )
+
+
 async def _resolve_entry(entry: QueueEntry) -> QueueEntry:
     """Fill in stream_url (and metadata) if not already set."""
     if entry.stream_url:
         return entry
-    data = await _ytdl_extract(entry.query)
+    data = await _ytdl_extract_with_fallback(entry.query)
     entry.title = data.get("title", entry.title)
     entry.webpage_url = data.get("webpage_url", entry.webpage_url)
     entry.thumbnail = data.get("thumbnail")
@@ -592,7 +633,7 @@ class Music(commands.Cog):
     # ------------------------------------------------------------------
 
     @app_commands.command(name="play", description="Play a song or add it to the queue")
-    @app_commands.describe(query="Song name, YouTube URL, Spotify URL, or SoundCloud URL")
+    @app_commands.describe(query="Song name, SoundCloud URL, Spotify URL, or YouTube URL (YouTube used as fallback)")
     @slash_designated_role()
     async def play(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer(ephemeral=True)
@@ -646,9 +687,9 @@ class Music(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        # --- YouTube / SoundCloud / plain search ---
+        # --- Direct URL / SoundCloud / YouTube / plain search (SoundCloud-first) ---
         try:
-            data = await _ytdl_extract(query)
+            data = await _ytdl_extract_with_fallback(query)
         except Exception as e:
             await interaction.followup.send(embed=self._err(f"Could not load track: {e}"), ephemeral=True)
             return
