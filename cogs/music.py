@@ -77,9 +77,13 @@ if _ytdlp_proxy_url:
 YTDL_OPTIONS["extractor_args"] = {
     "youtube": {
         "player_client": ["tv", "web_safari", "default"],
-    }
+    },
+    "youtubepot-bgutilhttp": {
+        "base_url": [os.getenv("BGUTIL_POT_URL", "http://bgutil-pot:4416")],
+    },
 }
 logger.info("yt-dlp player client chain: tv, web_safari, default")
+logger.info(f"bgutil POT provider URL: {os.getenv('BGUTIL_POT_URL', 'http://bgutil-pot:4416')}")
 
 if shutil.which("deno") is None:
     logger.warning(

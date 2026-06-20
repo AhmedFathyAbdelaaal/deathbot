@@ -12,3 +12,11 @@ services:
       - ./cookies.txt:/app/cookies.txt
     environment:
       - YOUTUBE_COOKIES_FILE=/app/cookies.txt
+    depends_on:
+      - bgutil-pot
+
+  bgutil-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    restart: unless-stopped
+    expose:
+      - "4416"
