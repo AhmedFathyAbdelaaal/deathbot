@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import re
+import shutil
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -30,7 +31,7 @@ if _cookies_file and not _has_cookies:
     )
 
 YTDL_OPTIONS: dict = {
-    "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best",
+    "format": "bestaudio/best",
     "restrictfilenames": True,
     "noplaylist": True,
     "nocheckcertificate": True,
@@ -72,8 +73,20 @@ if _ytdlp_proxy_url:
 # tokens largely don't bypass bot checks anymore as of 2026). The proxy
 # only solves YouTube's IP-reputation block — it doesn't affect which
 # formats a given client is allowed to see, so this is needed either way.
-YTDL_OPTIONS["extractor_args"] = {"youtube": {"player_client": ["android", "ios", "tv_embedded"]}}
-logger.info("yt-dlp player client chain: android, ios, tv_embedded")
+YTDL_OPTIONS["extractor_args"] = {
+    "youtube": {
+        "player_client": ["tv", "web_safari", "default"],
+    }
+}
+logger.info("yt-dlp player client chain: tv, web_safari, default")
+
+if shutil.which("deno") is None:
+    logger.warning(
+        "Deno not found on PATH — yt-dlp may fall back to degraded player "
+        "clients and unstable formats (e.g. itag=18 SABR fallback)."
+    )
+else:
+    logger.info("Deno runtime detected — yt-dlp signature solving enabled.")
 
 if _has_cookies:
     YTDL_OPTIONS["cookiefile"] = _cookies_file
