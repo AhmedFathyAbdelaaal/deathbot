@@ -40,6 +40,7 @@ YTDL_OPTIONS: dict = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
+    "verbose": True,
 }
 
 _iproyal_user = os.getenv("IPROYAL_USERNAME")
