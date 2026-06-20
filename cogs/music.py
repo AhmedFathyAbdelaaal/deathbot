@@ -40,6 +40,8 @@ YTDL_OPTIONS: dict = {
     # tv_embedded doesn't trigger YouTube's sign-in/bot check on server IPs.
     # Remaining clients are tried in order as fallbacks.
     "extractor_args": {"youtube": {"player_client": ["tv_embedded", "android", "ios"]}},
+    'proxy': os.getenv('YTDLP_PROXY'),
+    'cookiefile': '/app/cookies.txt',
 }
 
 if _has_cookies:
