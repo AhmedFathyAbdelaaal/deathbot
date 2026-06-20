@@ -57,8 +57,23 @@ if _has_cookies:
     YTDL_OPTIONS["cookiefile"] = _cookies_file
     logger.info(f"YouTube cookies loaded from: {_cookies_file}")
 
+_ffmpeg_socks_proxy = os.getenv("FFMPEG_SOCKS_PROXY") or None
+
+_ffmpeg_before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+
+if _ffmpeg_socks_proxy:
+    _ffmpeg_before = f"-http_proxy {_ffmpeg_socks_proxy} {_ffmpeg_before}"
+    logger.info("FFmpeg routing audio stream through SOCKS5 proxy")
+else:
+    logger.warning(
+        "FFMPEG_SOCKS_PROXY is not set — FFmpeg will fetch audio streams "
+        "directly from this server's IP. If YTDLP_PROXY is configured, this "
+        "mismatch will cause 403 Forbidden errors during playback, since "
+        "YouTube signs stream URLs to the IP that requested them."
+    )
+
 FFMPEG_OPTIONS: dict = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "before_options": _ffmpeg_before,
     "options": "-vn",
 }
 
