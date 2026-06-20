@@ -41,13 +41,17 @@ YTDL_OPTIONS: dict = {
 }
 
 if _proxy:
-    # Proxy routes around YouTube's IP block — web client gives full format availability
     YTDL_OPTIONS["proxy"] = _proxy
     logger.info(f"yt-dlp proxy configured: {_proxy}")
-else:
-    # No proxy — use player client chain to bypass bot detection without cookies
-    YTDL_OPTIONS["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "android", "ios"]}}
-    logger.info("No proxy configured — using player client bypass.")
+
+# Always use the player client chain, proxy or not. android/ios clients
+# expose a much wider set of audio formats than the default "web" client,
+# which requires a working PO token to unlock its full format list (PO
+# tokens largely don't bypass bot checks anymore as of 2026). The proxy
+# only solves YouTube's IP-reputation block — it doesn't affect which
+# formats a given client is allowed to see, so this is needed either way.
+YTDL_OPTIONS["extractor_args"] = {"youtube": {"player_client": ["android", "ios", "tv_embedded"]}}
+logger.info("yt-dlp player client chain: android, ios, tv_embedded")
 
 if _has_cookies:
     YTDL_OPTIONS["cookiefile"] = _cookies_file
