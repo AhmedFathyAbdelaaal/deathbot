@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import yt_dlp
+import secrets
 
 from utils.checks import slash_designated_role
 
@@ -40,9 +41,30 @@ YTDL_OPTIONS: dict = {
     "source_address": "0.0.0.0",
 }
 
-if _proxy:
-    YTDL_OPTIONS["proxy"] = _proxy
-    logger.info(f"yt-dlp proxy configured: {_proxy}")
+_iproyal_user = os.getenv("IPROYAL_USERNAME")
+_iproyal_pass = os.getenv("IPROYAL_PASSWORD")
+_iproyal_host = os.getenv("IPROYAL_HOST")
+_iproyal_port = os.getenv("IPROYAL_PORT")
+
+_proxy_configured = all([_iproyal_user, _iproyal_pass, _iproyal_host, _iproyal_port])
+
+if _proxy_configured:
+    _session_id = secrets.token_hex(6)  # e.g. "a1b2c3d4e5f6" — generated once per bot process
+    _proxy_auth = f"{_iproyal_user}:{_iproyal_pass}_session-{_session_id}_lifetime-24h"
+    _ytdlp_proxy_url = f"http://{_proxy_auth}@{_iproyal_host}:{_iproyal_port}"
+    _ffmpeg_proxy_url = f"socks5://{_proxy_auth}@{_iproyal_host}:{_iproyal_port}"
+    logger.info(f"Proxy session established: {_session_id} (shared by yt-dlp and FFmpeg)")
+else:
+    _ytdlp_proxy_url = None
+    _ffmpeg_proxy_url = None
+    logger.warning(
+        "IPROYAL_USERNAME/PASSWORD/HOST/PORT not fully set — proxy disabled. "
+        "If YouTube's IP block is active, extraction or playback will fail."
+    )
+
+if _ytdlp_proxy_url:
+    YTDL_OPTIONS["proxy"] = _ytdlp_proxy_url
+    logger.info("yt-dlp proxy configured (session-bound)")
 
 # Always use the player client chain, proxy or not. android/ios clients
 # expose a much wider set of audio formats than the default "web" client,
@@ -57,19 +79,15 @@ if _has_cookies:
     YTDL_OPTIONS["cookiefile"] = _cookies_file
     logger.info(f"YouTube cookies loaded from: {_cookies_file}")
 
-_ffmpeg_socks_proxy = os.getenv("FFMPEG_SOCKS_PROXY") or None
-
 _ffmpeg_before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 
-if _ffmpeg_socks_proxy:
-    _ffmpeg_before = f"-http_proxy {_ffmpeg_socks_proxy} {_ffmpeg_before}"
-    logger.info("FFmpeg routing audio stream through SOCKS5 proxy")
+if _ffmpeg_proxy_url:
+    _ffmpeg_before = f"-http_proxy {_ffmpeg_proxy_url} {_ffmpeg_before}"
+    logger.info("FFmpeg proxy configured (session-bound)")
 else:
     logger.warning(
-        "FFMPEG_SOCKS_PROXY is not set — FFmpeg will fetch audio streams "
-        "directly from this server's IP. If YTDLP_PROXY is configured, this "
-        "mismatch will cause 403 Forbidden errors during playback, since "
-        "YouTube signs stream URLs to the IP that requested them."
+        "No FFmpeg proxy configured — if yt-dlp is using a proxy, this "
+        "mismatch will cause 403 Forbidden errors during playback."
     )
 
 FFMPEG_OPTIONS: dict = {
