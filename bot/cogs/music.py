@@ -429,6 +429,12 @@ class GuildMusicState:
         self.text_channel: Optional[discord.TextChannel] = None
         self._inactivity_task: Optional[asyncio.Task] = None
         self._inactivity_timeout: int = int(os.getenv("INACTIVITY_TIMEOUT", "180"))
+        # Playback position tracking (for the WebSocket position tick). discord
+        # doesn't expose elapsed time, so we time it off the event loop clock and
+        # subtract any paused spans.
+        self._play_started_at: Optional[float] = None
+        self._paused_total: float = 0.0
+        self._paused_since: Optional[float] = None
 
     # -- Properties --
 
@@ -439,6 +445,27 @@ class GuildMusicState:
     def is_active(self) -> bool:
         vc = self.voice_client
         return bool(vc and (vc.is_playing() or vc.is_paused()))
+
+    def mark_paused(self):
+        if self._paused_since is None:
+            self._paused_since = self._bot.loop.time()
+
+    def mark_resumed(self):
+        if self._paused_since is not None:
+            self._paused_total += self._bot.loop.time() - self._paused_since
+            self._paused_since = None
+
+    def position_seconds(self) -> Optional[int]:
+        """Elapsed seconds into the current track, or None when nothing is
+        playing. Accounts for paused spans."""
+        vc = self.voice_client
+        if not vc or self._play_started_at is None:
+            return None
+        if not (vc.is_playing() or vc.is_paused()):
+            return None
+        now = self._bot.loop.time()
+        paused = self._paused_total + (now - self._paused_since if self._paused_since else 0.0)
+        return max(0, int(now - self._play_started_at - paused))
 
     @property
     def loop_mode(self) -> int:
@@ -607,6 +634,9 @@ class GuildMusicState:
                 asyncio.run_coroutine_threadsafe(self.play_next(err), self._bot.loop)
 
             self.voice_client.play(source, after=_after)
+            self._play_started_at = self._bot.loop.time()
+            self._paused_total = 0.0
+            self._paused_since = None
             events.broadcast({
                 "type": "now_playing",
                 "track": {
@@ -691,6 +721,10 @@ class Music(commands.Cog):
     def now_playing(self) -> Optional[QueueEntry]:
         st = self._active_state()
         return st.current if st else None
+
+    def position_seconds(self) -> Optional[int]:
+        st = self._active_state()
+        return st.position_seconds() if st else None
 
     def _err(self, msg: str) -> discord.Embed:
         return discord.Embed(description=f"❌ {msg}", color=discord.Color.red())
@@ -1002,6 +1036,7 @@ class Music(commands.Cog):
             await interaction.response.send_message(embed=self._err("Nothing is playing."), ephemeral=True)
             return
         state.voice_client.pause()
+        state.mark_paused()
         await interaction.response.send_message(embed=self._ok("Paused."), ephemeral=True)
 
     # ------------------------------------------------------------------
@@ -1016,6 +1051,7 @@ class Music(commands.Cog):
             await interaction.response.send_message(embed=self._err("Playback is not paused."), ephemeral=True)
             return
         state.voice_client.resume()
+        state.mark_resumed()
         await interaction.response.send_message(embed=self._ok("Resumed."), ephemeral=True)
 
     # ------------------------------------------------------------------

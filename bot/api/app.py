@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 import config
-from api.routers import auth, queue
+from api.routers import auth, library, playlists, queue, ws
 from db.base import get_sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -60,4 +60,7 @@ def create_app(bot) -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(queue.router)
+    app.include_router(library.router)
+    app.include_router(playlists.router)
+    app.include_router(ws.router)
     return app
