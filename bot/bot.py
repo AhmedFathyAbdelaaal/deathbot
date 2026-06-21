@@ -27,6 +27,7 @@ COGS = [
     "cogs.jokes",
     "cogs.music",
     "cogs.feedback",
+    "cogs.website",
 ]
 
 
