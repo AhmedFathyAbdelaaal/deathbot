@@ -1,0 +1,4 @@
+{
+  "apiBaseUrl": "https://api.deathbot.captionato.tech",
+  "wsBaseUrl": "wss://api.deathbot.captionato.tech"
+}
