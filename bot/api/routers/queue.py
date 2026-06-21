@@ -64,7 +64,7 @@ def _now_playing_out() -> Optional[NowPlayingOut]:
     return NowPlayingOut(
         title=entry.title,
         artist=entry.uploader,
-        duration=entry.duration,
+        duration=int(entry.duration) if entry.duration is not None else None,
         thumbnail=entry.thumbnail,
         webpage_url=entry.webpage_url or None,
         requested_by=entry.requested_by_name,

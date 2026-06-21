@@ -74,14 +74,18 @@ import { WsService } from './services/ws.service';
 })
 export class AppComponent {
   constructor(public auth: AuthService, public ws: WsService, private router: Router) {
-    // Keep the live socket tied to auth state.
-    effect(() => {
-      if (this.auth.isAuthed()) {
-        this.ws.connect();
-      } else {
-        this.ws.disconnect();
-      }
-    });
+    // Keep the live socket tied to auth state. connect()/disconnect() write the
+    // ws 'connected' signal, so this side-effecting effect must opt in.
+    effect(
+      () => {
+        if (this.auth.isAuthed()) {
+          this.ws.connect();
+        } else {
+          this.ws.disconnect();
+        }
+      },
+      { allowSignalWrites: true },
+    );
   }
 
   logout() {

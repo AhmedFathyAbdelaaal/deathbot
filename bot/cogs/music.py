@@ -296,7 +296,9 @@ async def _resolve_entry(entry: QueueEntry) -> QueueEntry:
     entry.title = data.get("title", entry.title)
     entry.webpage_url = data.get("webpage_url", entry.webpage_url)
     entry.thumbnail = data.get("thumbnail")
-    entry.duration = data.get("duration")
+    # yt-dlp durations can be floats (e.g. 213.04); keep them integer seconds.
+    _dur = data.get("duration")
+    entry.duration = int(_dur) if _dur is not None else None
     entry.uploader = data.get("uploader")
     entry.stream_url = data["url"]
     return entry
