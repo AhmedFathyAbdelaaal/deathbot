@@ -21,4 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# FastAPI/uvicorn server port — must match API_PORT and the Coolify route for
+# api.deathbot.captionato.tech.
+EXPOSE 8000
+
 CMD ["python", "bot.py"]

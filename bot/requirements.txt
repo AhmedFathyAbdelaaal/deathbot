@@ -3,3 +3,11 @@ python-dotenv>=1.0.0
 yt-dlp[default]
 bgutil-ytdlp-pot-provider
 spotipy>=2.23.0
+
+# ── Web platform (Phase 2) ──────────────────────────────────────────────────
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.29
+python-multipart>=0.0.9
+mutagen>=1.47
