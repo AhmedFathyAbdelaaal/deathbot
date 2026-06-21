@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import discord
@@ -13,7 +13,9 @@ import yt_dlp
 import secrets
 
 from utils.checks import slash_designated_role
-from services import queue_service
+from db.base import get_sessionmaker
+from db.models import Track, User
+from services import queue_service, queue_store, events, playback, user_service
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,15 @@ LOOP_TRACK = 1
 LOOP_QUEUE = 2
 LOOP_LABELS = {LOOP_OFF: "Off", LOOP_TRACK: "Track", LOOP_QUEUE: "Queue"}
 
+
+def _fmt_seconds(seconds: Optional[int]) -> str:
+    """Format a duration in seconds as H:MM:SS / M:SS, or '?' if unknown."""
+    if not seconds:
+        return "?"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
 SPOTIFY_RE = re.compile(r"https?://open\.spotify\.com/(track|album|playlist)/([A-Za-z0-9]+)")
 DIRECT_AUDIO_RE = re.compile(r"\.(mp3|wav|m4a|ogg|flac|opus|aac)(\?.*)?$", re.IGNORECASE)
 SOUNDCLOUD_RE = re.compile(r"https?://(www\.)?soundcloud\.com/", re.IGNORECASE)
@@ -166,44 +177,53 @@ _sp = _build_spotify_client()
 
 @dataclass
 class QueueEntry:
-    """A track in the queue. stream_url may be None until resolved at play-time."""
+    """An in-memory, resolved-or-resolvable playback entry.
 
-    query: str             # ytdl query or direct URL
-    title: str             # display title (may equal query until resolved)
-    webpage_url: str
+    Decoupled from Discord: attribution is a plain ``requested_by_name`` string
+    plus the ``added_by_id`` users.id, so the same entry type serves tracks
+    queued from Discord and from the web. The upcoming queue itself lives in
+    Postgres (queue_items); a QueueEntry is materialized only when an item is
+    popped to become the now-playing track (or for display)."""
+
+    query: str                          # resolve query (URL/search) or local file path
+    title: str
+    webpage_url: str = ""
     thumbnail: Optional[str] = None
     duration: Optional[int] = None
-    uploader: Optional[str] = None
-    requested_by: Optional[discord.Member] = None
-    stream_url: Optional[str] = None   # resolved just before playback
+    uploader: Optional[str] = None      # artist / channel
+    requested_by_name: Optional[str] = None
+    added_by_id: Optional[int] = None   # users.id
+    track_id: Optional[int] = None      # set if this is a Library upload
+    is_local: bool = False              # True → play the local file directly, no yt-dlp
+    stream_url: Optional[str] = None    # resolved just before playback
 
     def fmt_duration(self) -> str:
-        if not self.duration:
-            return "?"
-        m, s = divmod(int(self.duration), 60)
-        h, m = divmod(m, 60)
-        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        return _fmt_seconds(self.duration)
 
     @classmethod
-    def from_ytdl(cls, data: dict, member: discord.Member) -> "QueueEntry":
-        return cls(
-            query=data.get("webpage_url", data.get("url", "")),
-            title=data.get("title", "Unknown"),
-            webpage_url=data.get("webpage_url", ""),
-            thumbnail=data.get("thumbnail"),
-            duration=data.get("duration"),
-            uploader=data.get("uploader"),
-            requested_by=member,
-            stream_url=data.get("url"),
-        )
-
-    @classmethod
-    def from_search(cls, query: str, member: discord.Member, title: Optional[str] = None) -> "QueueEntry":
+    def from_queue_item(cls, item, track, requested_by_name: Optional[str]) -> "QueueEntry":
+        """Build from a popped queue_items row. ``track`` is the joined Track
+        row when ``item.track_id`` is set (a Library upload), else None."""
+        if track is not None:
+            return cls(
+                query=track.file_path,
+                title=track.title,
+                uploader=track.artist,
+                duration=track.duration_seconds,
+                requested_by_name=requested_by_name,
+                added_by_id=item.added_by,
+                track_id=track.id,
+                is_local=True,
+                stream_url=track.file_path,
+            )
+        query = item.source_url or f"{item.title or ''} {item.artist or ''}".strip()
         return cls(
             query=query,
-            title=title or query,
-            webpage_url="",
-            requested_by=member,
+            title=item.title or query,
+            webpage_url=item.source_url or "",
+            uploader=item.artist,
+            requested_by_name=requested_by_name,
+            added_by_id=item.added_by,
         )
 
 
@@ -402,7 +422,6 @@ class GuildMusicState:
     def __init__(self, bot: commands.Bot, guild: discord.Guild):
         self._bot = bot
         self._guild = guild
-        self._queue: list[QueueEntry] = []
         self._current: Optional[QueueEntry] = None
         self._loop_mode: int = LOOP_OFF
         self._volume: float = int(os.getenv("DEFAULT_VOLUME", "70")) / 100.0
@@ -417,9 +436,9 @@ class GuildMusicState:
     def current(self) -> Optional[QueueEntry]:
         return self._current
 
-    @property
-    def queue(self) -> list[QueueEntry]:
-        return self._queue
+    def is_active(self) -> bool:
+        vc = self.voice_client
+        return bool(vc and (vc.is_playing() or vc.is_paused()))
 
     @property
     def loop_mode(self) -> int:
@@ -458,7 +477,6 @@ class GuildMusicState:
                 await vc.disconnect()
                 self.voice_client = None
                 self._current = None
-                self._queue.clear()
                 if self.text_channel:
                     await self.text_channel.send(
                         embed=discord.Embed(
@@ -473,8 +491,42 @@ class GuildMusicState:
 
     # -- Playback --
 
+    async def _pop_next_entry(self) -> Optional[QueueEntry]:
+        """Pop the next queue_item from Postgres and materialize it as a
+        QueueEntry. Returns None if the queue is empty or the DB is down."""
+        sm = get_sessionmaker()
+        if sm is None:
+            return None
+        async with sm() as session:
+            item = await queue_store.pop_next(session)
+            if item is None:
+                return None
+            track = await session.get(Track, item.track_id) if item.track_id else None
+            requester = await session.get(User, item.added_by) if item.added_by else None
+            requested_by_name = requester.display_name if requester else None
+        events.broadcast({"type": "queue_changed"})
+        return QueueEntry.from_queue_item(item, track, requested_by_name)
+
+    async def _recycle_current_to_queue(self):
+        """LOOP_QUEUE: append the just-finished track back onto the Postgres tail."""
+        cur = self._current
+        sm = get_sessionmaker()
+        if cur is None or sm is None:
+            return
+        async with sm() as session:
+            await queue_store.add_item(
+                session,
+                added_by=cur.added_by_id,
+                track_id=cur.track_id,
+                source_url=None if cur.track_id else cur.query,
+                title=cur.title,
+                artist=cur.uploader,
+            )
+        events.broadcast({"type": "queue_changed"})
+
     async def play_next(self, error=None):
-        """Advance to the next track. Called by the after-play callback."""
+        """Advance to the next track. Called by the after-play callback and by
+        the controller when starting from idle. Pulls from Postgres."""
         if error:
             logger.warning(f"[{self._guild.name}] Playback error: {error}")
             if self.text_channel:
@@ -489,30 +541,23 @@ class GuildMusicState:
                     pass
 
         if self._loop_mode == LOOP_TRACK and self._current:
-            # Re-fetch stream URL so it doesn't expire on very long loops
-            self._current.stream_url = None
+            # Replay current. Re-resolve remote streams (URLs expire); a local
+            # file path stays valid.
+            if not self._current.is_local:
+                self._current.stream_url = None
             await self._play_entry(self._current)
             return
 
         if self._loop_mode == LOOP_QUEUE and self._current:
-            # Cycle current track to the back of the queue
-            recycled = QueueEntry.from_search(
-                self._current.query,
-                self._current.requested_by,
-                title=self._current.title,
-            )
-            recycled.webpage_url = self._current.webpage_url
-            recycled.thumbnail = self._current.thumbnail
-            recycled.duration = self._current.duration
-            recycled.uploader = self._current.uploader
-            self._queue.append(recycled)
+            await self._recycle_current_to_queue()
 
-        if not self._queue:
+        next_entry = await self._pop_next_entry()
+        if next_entry is None:
             self._current = None
             self._schedule_inactivity()
+            events.broadcast({"type": "now_playing", "track": None})
             return
 
-        next_entry = self._queue.pop(0)
         try:
             next_entry = await _resolve_entry(next_entry)
         except Exception as e:
@@ -550,7 +595,9 @@ class GuildMusicState:
         self._current = entry
 
         try:
-            source = discord.FFmpegPCMAudio(entry.stream_url, **FFMPEG_OPTIONS)
+            # Library uploads are local files — no proxy/reconnect input options.
+            ffmpeg_opts = {"options": "-vn"} if entry.is_local else FFMPEG_OPTIONS
+            source = discord.FFmpegPCMAudio(entry.stream_url, **ffmpeg_opts)
             source = discord.PCMVolumeTransformer(source, volume=self._volume)
 
             if self.voice_client.is_playing():
@@ -560,6 +607,17 @@ class GuildMusicState:
                 asyncio.run_coroutine_threadsafe(self.play_next(err), self._bot.loop)
 
             self.voice_client.play(source, after=_after)
+            events.broadcast({
+                "type": "now_playing",
+                "track": {
+                    "title": entry.title,
+                    "artist": entry.uploader,
+                    "duration": entry.duration,
+                    "thumbnail": entry.thumbnail,
+                    "webpage_url": entry.webpage_url,
+                    "requested_by": entry.requested_by_name,
+                },
+            })
         except Exception as e:
             logger.error(f"Failed to start playback of '{entry.title}': {e}")
             self._current = None
@@ -569,7 +627,6 @@ class GuildMusicState:
         self._cancel_inactivity()
         if self.voice_client and self.voice_client.is_playing():
             self.voice_client.stop()
-        self._queue.clear()
         self._current = None
 
 
@@ -581,11 +638,59 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._states: dict[int, GuildMusicState] = {}
+        # Register as the single playback controller the queue service + web API
+        # drive through (v1 is locked to one Discord server).
+        playback.set_controller(self)
 
     def _state(self, guild: discord.Guild) -> GuildMusicState:
         if guild.id not in self._states:
             self._states[guild.id] = GuildMusicState(self.bot, guild)
         return self._states[guild.id]
+
+    # ------------------------------------------------------------------
+    # Playback controller interface (called by queue_service / web API)
+    # ------------------------------------------------------------------
+
+    def _active_state(self) -> Optional[GuildMusicState]:
+        """The state currently holding a voice connection, else any known one.
+        Single-server scope makes this unambiguous."""
+        for st in self._states.values():
+            if st.voice_client and st.voice_client.is_connected():
+                return st
+        return next(iter(self._states.values()), None)
+
+    async def ensure_playing(self) -> bool:
+        """Start playback if connected, idle, and the Postgres queue has items.
+        Returns True if a track started."""
+        st = self._active_state()
+        if st is None or not (st.voice_client and st.voice_client.is_connected()):
+            return False
+        if st.is_active():
+            return False
+        await st.play_next()
+        return st.is_active()
+
+    def is_active(self) -> bool:
+        st = self._active_state()
+        return bool(st and st.is_active())
+
+    async def skip_current(self) -> bool:
+        st = self._active_state()
+        if not st or not st.is_active():
+            return False
+        st.voice_client.stop()  # after-callback advances to the next queue item
+        return True
+
+    async def stop_all(self) -> bool:
+        st = self._active_state()
+        if not st or not st.voice_client:
+            return False
+        st.cleanup()
+        return True
+
+    def now_playing(self) -> Optional[QueueEntry]:
+        st = self._active_state()
+        return st.current if st else None
 
     def _err(self, msg: str) -> discord.Embed:
         return discord.Embed(description=f"❌ {msg}", color=discord.Color.red())
@@ -641,7 +746,21 @@ class Music(commands.Cog):
         if state is None:
             return
 
-        # --- Spotify ---
+        sm = get_sessionmaker()
+        if sm is None:
+            await interaction.followup.send(
+                embed=self._err("The music database is unavailable right now."), ephemeral=True
+            )
+            return
+
+        # Attribution: ensure the Discord user has a users row.
+        async with sm() as session:
+            user = await user_service.upsert(
+                session, interaction.user.id, interaction.user.display_name
+            )
+            user_id = user.id
+
+        # --- Spotify: expand to search labels and bulk-enqueue ---
         if SPOTIFY_RE.search(query):
             try:
                 search_queries = await _spotify_queries(query)
@@ -653,69 +772,75 @@ class Music(commands.Cog):
                 await interaction.followup.send(embed=self._err("No tracks found in that Spotify link."), ephemeral=True)
                 return
 
-            # Resolve the first track immediately so playback starts without delay
-            first_entry = QueueEntry.from_search(search_queries[0], interaction.user)
-            try:
-                first_entry = await _resolve_entry(first_entry)
-            except Exception as e:
-                await interaction.followup.send(embed=self._err(f"Could not load first track: {e}"), ephemeral=True)
-                return
+            async with sm() as session:
+                for label in search_queries:
+                    await queue_store.add_item(session, added_by=user_id, source_url=label, title=label)
+            events.broadcast({"type": "queue_changed"})
 
-            # Add remaining as lazy entries (resolved at play-time)
-            for q in search_queries[1:]:
-                queue_service.enqueue_tail(state, QueueEntry.from_search(q, interaction.user))
-
-            if not queue_service.is_active(state):
-                await state._play_entry(first_entry)
+            started = await self.ensure_playing()
+            if started:
+                cur = self.now_playing()
                 embed = discord.Embed(
                     title="Now Playing",
-                    description=f"[{first_entry.title}]({first_entry.webpage_url or '#'})",
+                    description=f"[{cur.title}]({cur.webpage_url or '#'})" if cur else "Starting playback…",
                     color=discord.Color.green(),
                 )
-                if first_entry.thumbnail:
-                    embed.set_thumbnail(url=first_entry.thumbnail)
+                if cur and cur.thumbnail:
+                    embed.set_thumbnail(url=cur.thumbnail)
                 if len(search_queries) > 1:
                     embed.add_field(name="Queued", value=f"{len(search_queries) - 1} more track(s)", inline=True)
             else:
-                queue_service.enqueue_front(state, first_entry)  # first track plays soonest
                 embed = discord.Embed(
                     description=f"Added **{len(search_queries)}** track(s) from Spotify to the queue.",
                     color=discord.Color.blurple(),
                 )
-
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         # --- Direct URL / SoundCloud / YouTube / plain search (SoundCloud-first) ---
+        # Resolve up-front to validate the query and capture display metadata;
+        # the stream URL is re-resolved at play-time (URLs expire).
         try:
             data = await _ytdl_extract_with_fallback(query)
         except Exception as e:
             await interaction.followup.send(embed=self._err(f"Could not load track: {e}"), ephemeral=True)
             return
 
-        entry = QueueEntry.from_ytdl(data, interaction.user)
-        result = await queue_service.enqueue(state, entry)
+        async with sm() as session:
+            item, started = await queue_service.add(
+                session,
+                added_by=user_id,
+                source_url=data.get("webpage_url") or query,
+                title=data.get("title"),
+                artist=data.get("uploader"),
+            )
 
-        if result.started_now:
+        title = data.get("title", "Unknown")
+        webpage_url = data.get("webpage_url", "")
+        thumbnail = data.get("thumbnail")
+        duration = data.get("duration")
+        uploader = data.get("uploader")
+
+        if started:
             embed = discord.Embed(
                 title="Now Playing",
-                description=f"[{entry.title}]({entry.webpage_url or '#'})",
+                description=f"[{title}]({webpage_url or '#'})",
                 color=discord.Color.green(),
             )
-            if entry.thumbnail:
-                embed.set_thumbnail(url=entry.thumbnail)
-            embed.add_field(name="Duration", value=entry.fmt_duration(), inline=True)
-            embed.add_field(name="Uploader", value=entry.uploader or "Unknown", inline=True)
+            if thumbnail:
+                embed.set_thumbnail(url=thumbnail)
+            embed.add_field(name="Duration", value=_fmt_seconds(duration), inline=True)
+            embed.add_field(name="Uploader", value=uploader or "Unknown", inline=True)
             embed.set_footer(text=f"Requested by {interaction.user.display_name}")
         else:
             embed = discord.Embed(
-                description=f"Added to queue at position **#{result.position}**",
+                description=f"Added to queue at position **#{item.position + 1}**",
                 color=discord.Color.blurple(),
             )
-            embed.add_field(name="Track", value=f"[{entry.title}]({entry.webpage_url or '#'})", inline=False)
-            embed.add_field(name="Duration", value=entry.fmt_duration(), inline=True)
-            if entry.thumbnail:
-                embed.set_thumbnail(url=entry.thumbnail)
+            embed.add_field(name="Track", value=f"[{title}]({webpage_url or '#'})", inline=False)
+            embed.add_field(name="Duration", value=_fmt_seconds(duration), inline=True)
+            if thumbnail:
+                embed.set_thumbnail(url=thumbnail)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -726,8 +851,7 @@ class Music(commands.Cog):
     @app_commands.command(name="skip", description="Skip the current track")
     @slash_designated_role()
     async def skip(self, interaction: discord.Interaction):
-        state = self._state(interaction.guild)
-        if not queue_service.skip(state):  # triggers after → play_next
+        if not await queue_service.skip():  # triggers after → play_next
             await interaction.response.send_message(embed=self._err("Nothing is currently playing."), ephemeral=True)
             return
         await interaction.response.send_message(embed=self._ok("Skipped!"), ephemeral=True)
@@ -739,9 +863,14 @@ class Music(commands.Cog):
     @app_commands.command(name="stop", description="Stop playback and clear the queue")
     @slash_designated_role()
     async def stop(self, interaction: discord.Interaction):
-        state = self._state(interaction.guild)
-        if not queue_service.stop(state):
-            await interaction.response.send_message(embed=self._err("Not connected to a voice channel."), ephemeral=True)
+        sm = get_sessionmaker()
+        if sm is None:
+            await interaction.response.send_message(embed=self._err("The music database is unavailable right now."), ephemeral=True)
+            return
+        async with sm() as session:
+            stopped = await queue_service.stop(session)
+        if not stopped:
+            await interaction.response.send_message(embed=self._err("Nothing is playing and the queue is empty."), ephemeral=True)
             return
         await interaction.response.send_message(embed=self._ok("Stopped and cleared the queue."), ephemeral=True)
 
@@ -753,9 +882,15 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def leave(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        if not queue_service.stop(state):
+        if not state.voice_client:
             await interaction.response.send_message(embed=self._err("Not connected to a voice channel."), ephemeral=True)
             return
+        sm = get_sessionmaker()
+        if sm is not None:
+            async with sm() as session:
+                await queue_service.stop(session)
+        else:
+            state.cleanup()
         await state.voice_client.disconnect()
         state.voice_client = None
         await interaction.response.send_message(embed=self._ok("Disconnected."), ephemeral=True)
@@ -767,8 +902,14 @@ class Music(commands.Cog):
     @app_commands.command(name="queue", description="Display the current music queue")
     @slash_designated_role()
     async def queue_cmd(self, interaction: discord.Interaction):
-        state = self._state(interaction.guild)
-        current, entries = queue_service.snapshot(state)
+        current = self.now_playing()
+        entries: list[QueueEntry] = []
+        sm = get_sessionmaker()
+        if sm is not None:
+            async with sm() as session:
+                for it in await queue_store.list_queue(session):
+                    track = await session.get(Track, it.track_id) if it.track_id else None
+                    entries.append(QueueEntry.from_queue_item(it, track, None))
         view = QueueView(entries, current)
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
@@ -779,9 +920,13 @@ class Music(commands.Cog):
     @app_commands.command(name="shuffle", description="Shuffle the queue (does not affect current track)")
     @slash_designated_role()
     async def shuffle(self, interaction: discord.Interaction):
-        state = self._state(interaction.guild)
-        count = queue_service.shuffle(state)
-        if count < 0:
+        sm = get_sessionmaker()
+        if sm is None:
+            await interaction.response.send_message(embed=self._err("The music database is unavailable right now."), ephemeral=True)
+            return
+        async with sm() as session:
+            count = await queue_service.shuffle(session)
+        if count == 0:
             await interaction.response.send_message(embed=self._err("The queue is empty."), ephemeral=True)
             return
         await interaction.response.send_message(embed=self._ok(f"Shuffled {count} track(s)."), ephemeral=True)
@@ -794,8 +939,8 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def loop_cmd(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        new_mode = queue_service.cycle_loop(state)
-        label = LOOP_LABELS[new_mode]
+        state.loop_mode = state.loop_mode + 1
+        label = LOOP_LABELS[state.loop_mode]
         await interaction.response.send_message(
             embed=self._ok(f"Loop mode set to **{label}**."), ephemeral=True
         )
@@ -824,8 +969,8 @@ class Music(commands.Cog):
         embed.add_field(name="Uploader", value=e.uploader or "Unknown", inline=True)
         embed.add_field(name="Loop", value=LOOP_LABELS[state.loop_mode], inline=True)
         embed.add_field(name="Volume", value=f"{int(state.volume * 100)}%", inline=True)
-        if e.requested_by:
-            embed.set_footer(text=f"Requested by {e.requested_by.display_name}")
+        if e.requested_by_name:
+            embed.set_footer(text=f"Requested by {e.requested_by_name}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------

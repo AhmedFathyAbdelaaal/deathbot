@@ -1,102 +1,95 @@
 """
-Shared queue service.
+Shared queue orchestration — the single write path for queue mutations.
 
-Single write path for every queue mutation. Discord cogs call into this
-module today; the web API (Phase 2) will call into the *same* functions, so
-that "skip the now-playing track" — or any other mutation — is one code path
-regardless of whether it originated in Discord or the web app.
+Both the Discord cog and the web API call into here. Each mutation: writes
+through ``queue_store`` (Postgres, one transaction), fires a WebSocket-bound
+event *after* the commit, and — for adds — asks the playback controller to
+start if it was idle. "Skip", "add", "remove", etc. are therefore one code path
+regardless of whether Discord or the web triggered them (PRD 1.5).
 
-These functions operate on a ``GuildMusicState`` (defined in ``cogs.music``)
-via duck typing. ``GuildMusicState`` owns the in-memory *playback* mechanics
-(voice client, FFmpeg source, inactivity timer); this module owns the *queue*
-operations on top of it. No Postgres yet — that arrives in Phase 2, behind this
-same interface, so cogs won't need to change again.
+The upcoming queue lives in Postgres; the now-playing track and voice state
+live in the controller's in-memory playback engine.
 """
 
-from __future__ import annotations
-
 import logging
-import random
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-if TYPE_CHECKING:  # avoid a runtime import cycle (cogs.music imports this module)
-    from cogs.music import GuildMusicState, QueueEntry
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from db.models import QueueItem
+from services import events, playback, queue_store
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class EnqueueResult:
-    """Outcome of an enqueue: whether playback started now, and the resulting
-    1-based queue position (0 when playback started immediately)."""
+async def add(
+    session: AsyncSession,
+    *,
+    added_by: Optional[int] = None,
+    track_id: Optional[int] = None,
+    source_url: Optional[str] = None,
+    title: Optional[str] = None,
+    artist: Optional[str] = None,
+) -> "tuple[QueueItem, bool]":
+    """Append a track and start playback if the engine was idle. Returns the
+    persisted item and whether playback started immediately."""
+    item = await queue_store.add_item(
+        session,
+        added_by=added_by,
+        track_id=track_id,
+        source_url=source_url,
+        title=title,
+        artist=artist,
+    )
+    events.broadcast({"type": "queue_changed"})
 
-    started_now: bool
-    position: int
-
-
-def is_active(state: "GuildMusicState") -> bool:
-    """True if something is currently playing or paused."""
-    vc = state.voice_client
-    return bool(vc and (vc.is_playing() or vc.is_paused()))
-
-
-async def enqueue(state: "GuildMusicState", entry: "QueueEntry") -> EnqueueResult:
-    """Add one track. Starts playback immediately if idle, otherwise appends
-    to the tail. This is the common single-track add path."""
-    if not is_active(state):
-        await state._play_entry(entry)
-        return EnqueueResult(started_now=True, position=0)
-    state.queue.append(entry)
-    return EnqueueResult(started_now=False, position=len(state.queue))
-
-
-def enqueue_tail(state: "GuildMusicState", entry: "QueueEntry") -> int:
-    """Append to the back of the queue without touching playback. Returns the
-    new 1-based position."""
-    state.queue.append(entry)
-    return len(state.queue)
-
-
-def enqueue_front(state: "GuildMusicState", entry: "QueueEntry") -> None:
-    """Insert at the front of the queue so it plays soonest."""
-    state.queue.insert(0, entry)
+    started = False
+    controller = playback.get_controller()
+    if controller is not None:
+        try:
+            started = await controller.ensure_playing()
+        except Exception:
+            logger.exception("ensure_playing failed after enqueue")
+    return item, started
 
 
-def skip(state: "GuildMusicState") -> bool:
-    """Stop the current track; the playback after-callback advances to the
-    next. Returns False if nothing is playing."""
-    vc = state.voice_client
-    if not vc or not vc.is_playing():
+async def remove(session: AsyncSession, item_id: int) -> bool:
+    ok = await queue_store.remove_item(session, item_id)
+    if ok:
+        events.broadcast({"type": "queue_changed"})
+    return ok
+
+
+async def reorder(session: AsyncSession, item_id: int, new_index: int) -> bool:
+    ok = await queue_store.reorder(session, item_id, new_index)
+    if ok:
+        events.broadcast({"type": "queue_changed"})
+    return ok
+
+
+async def shuffle(session: AsyncSession) -> int:
+    n = await queue_store.shuffle(session)
+    events.broadcast({"type": "queue_changed"})
+    return n
+
+
+async def skip() -> bool:
+    """Skip the now-playing track. The engine's after-callback advances to the
+    next Postgres item and broadcasts on its own."""
+    controller = playback.get_controller()
+    if controller is None:
         return False
-    vc.stop()
-    return True
+    return await controller.skip_current()
 
 
-def stop(state: "GuildMusicState") -> bool:
-    """Stop playback and clear the queue. Returns False if not connected."""
-    if not state.voice_client:
-        return False
-    state.cleanup()
-    return True
-
-
-def shuffle(state: "GuildMusicState") -> int:
-    """Shuffle the pending queue (the current track is untouched). Returns the
-    number of tracks shuffled, or -1 if the queue is empty."""
-    if not state.queue:
-        return -1
-    random.shuffle(state.queue)
-    return len(state.queue)
-
-
-def cycle_loop(state: "GuildMusicState") -> int:
-    """Advance loop mode Off → Track → Queue → Off. Returns the new mode."""
-    state.loop_mode = state.loop_mode + 1
-    return state.loop_mode
-
-
-def snapshot(state: "GuildMusicState") -> tuple[Optional["QueueEntry"], list["QueueEntry"]]:
-    """Return ``(current, queued_entries)`` — a copy of the queue for display
-    or serialization, plus the now-playing entry."""
-    return state.current, list(state.queue)
+async def stop(session: AsyncSession) -> bool:
+    """Clear the queue and stop playback. Returns True if anything was stopped
+    or cleared."""
+    cleared = await queue_store.clear(session)
+    stopped = False
+    controller = playback.get_controller()
+    if controller is not None:
+        stopped = await controller.stop_all()
+    events.broadcast({"type": "queue_changed"})
+    events.broadcast({"type": "now_playing", "track": None})
+    return stopped or cleared > 0
