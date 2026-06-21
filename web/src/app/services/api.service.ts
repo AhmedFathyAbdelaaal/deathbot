@@ -45,6 +45,9 @@ export class ApiService {
   skip() {
     return this.http.post<{ skipped: boolean }>(`${this.base}/queue/skip`, {});
   }
+  join() {
+    return this.http.post<{ ok: boolean; status: string }>(`${this.base}/queue/join`, {});
+  }
   shuffleQueue() {
     return this.http.post<{ count: number }>(`${this.base}/queue/shuffle`, {});
   }

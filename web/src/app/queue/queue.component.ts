@@ -38,6 +38,10 @@ import { WsService } from '../services/ws.service';
         <div class="card now idle-card">
           <span class="pulse-dot idle"></span>
           <span class="muted">Nothing playing right now.</span>
+          <span class="spacer"></span>
+          <button class="primary" (click)="summon()" [disabled]="summoning()">
+            {{ summoning() ? 'Summoning…' : 'Summon bot' }}
+          </button>
         </div>
       </ng-template>
 
@@ -98,6 +102,7 @@ export class QueueComponent implements OnInit, OnDestroy {
   readonly nowPlaying = signal<NowPlaying | null>(null);
   readonly items = signal<QueueItem[]>([]);
   readonly adding = signal(false);
+  readonly summoning = signal(false);
   link = '';
   private unsub: (() => void) | null = null;
 
@@ -158,6 +163,20 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   shuffle() {
     this.api.shuffleQueue().subscribe(() => this.reload());
+  }
+
+  summon() {
+    this.summoning.set(true);
+    this.api.join().subscribe({
+      next: () => {
+        this.summoning.set(false);
+        this.reload();
+      },
+      error: (e) => {
+        this.summoning.set(false);
+        alert(e?.error?.detail || 'Could not summon the bot.');
+      },
+    });
   }
 
   stopConfirm() {

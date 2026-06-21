@@ -151,6 +151,20 @@ async def move_in_queue(
     return {"ok": True}
 
 
+@router.post("/join")
+async def join(_: User = Depends(get_current_user)):
+    """Summon the bot into the busiest voice channel and start the queue."""
+    controller = playback.get_controller()
+    if controller is None:
+        raise HTTPException(status_code=503, detail="Playback controller unavailable")
+    result = await controller.join_and_play()
+    if result == "no_channel":
+        raise HTTPException(status_code=409, detail="No one is in a voice channel to join.")
+    if result == "error":
+        raise HTTPException(status_code=500, detail="Could not join the voice channel.")
+    return {"ok": True, "status": result}
+
+
 @router.post("/skip")
 async def skip(_: User = Depends(get_current_user)):
     return {"skipped": await queue_service.skip()}

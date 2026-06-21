@@ -746,6 +746,34 @@ class Music(commands.Cog):
             return None
         return {"title": data.get("title"), "artist": data.get("uploader")}
 
+    async def join_and_play(self) -> str:
+        """Used by the web 'Summon bot' button. If already connected, just start
+        the queue; otherwise join the busiest voice channel and start. Returns
+        'playing', 'joined', 'no_channel' (nobody in voice), or 'error'."""
+        existing = self._active_state()
+        if existing and existing.voice_client and existing.voice_client.is_connected():
+            await self.ensure_playing()
+            return "playing"
+
+        best = None
+        best_count = 0
+        for guild in self.bot.guilds:
+            for ch in guild.voice_channels:
+                humans = sum(1 for m in ch.members if not m.bot)
+                if humans > best_count:
+                    best, best_count = ch, humans
+        if best is None:
+            return "no_channel"
+
+        state = self._state(best.guild)
+        try:
+            state.voice_client = await best.connect()
+        except Exception:
+            logger.exception("join_and_play: voice connect failed")
+            return "error"
+        await self.ensure_playing()
+        return "joined"
+
     def _err(self, msg: str) -> discord.Embed:
         return discord.Embed(description=f"❌ {msg}", color=discord.Color.red())
 
@@ -897,6 +925,21 @@ class Music(commands.Cog):
                 embed.set_thumbnail(url=thumbnail)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # /join
+    # ------------------------------------------------------------------
+
+    @app_commands.command(name="join", description="Join your voice channel and start the queue")
+    @slash_designated_role()
+    async def join(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        state = await self._ensure_voice(interaction)
+        if state is None:
+            return
+        started = await self.ensure_playing()
+        msg = "Joined and started the queue." if started else "Joined your channel."
+        await interaction.followup.send(embed=self._ok(msg), ephemeral=True)
 
     # ------------------------------------------------------------------
     # /skip
