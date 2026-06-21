@@ -2,14 +2,14 @@ version: "3.8"
 
 services:
   bot:
-    build: .
+    build: ./bot
     restart: unless-stopped
-    env_file: .env
+    env_file: ./bot/.env
     volumes:
       # Persist jokes.json edits across container restarts
-      - ./data:/app/data
+      - ./bot/data:/app/data
       # Mount the cookies file
-      - ./cookies.txt:/app/cookies.txt
+      - ./bot/cookies.txt:/app/cookies.txt
     environment:
       - YOUTUBE_COOKIES_FILE=/app/cookies.txt
     depends_on:

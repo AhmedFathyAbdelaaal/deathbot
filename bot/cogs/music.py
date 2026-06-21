@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import random
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -14,6 +13,7 @@ import yt_dlp
 import secrets
 
 from utils.checks import slash_designated_role
+from services import queue_service
 
 logger = logging.getLogger(__name__)
 
@@ -663,10 +663,9 @@ class Music(commands.Cog):
 
             # Add remaining as lazy entries (resolved at play-time)
             for q in search_queries[1:]:
-                state.queue.append(QueueEntry.from_search(q, interaction.user))
+                queue_service.enqueue_tail(state, QueueEntry.from_search(q, interaction.user))
 
-            is_playing = state.voice_client.is_playing() or state.voice_client.is_paused()
-            if not is_playing:
+            if not queue_service.is_active(state):
                 await state._play_entry(first_entry)
                 embed = discord.Embed(
                     title="Now Playing",
@@ -678,7 +677,7 @@ class Music(commands.Cog):
                 if len(search_queries) > 1:
                     embed.add_field(name="Queued", value=f"{len(search_queries) - 1} more track(s)", inline=True)
             else:
-                state.queue.insert(0, first_entry)  # first track plays soonest
+                queue_service.enqueue_front(state, first_entry)  # first track plays soonest
                 embed = discord.Embed(
                     description=f"Added **{len(search_queries)}** track(s) from Spotify to the queue.",
                     color=discord.Color.blurple(),
@@ -695,10 +694,9 @@ class Music(commands.Cog):
             return
 
         entry = QueueEntry.from_ytdl(data, interaction.user)
-        is_playing = state.voice_client.is_playing() or state.voice_client.is_paused()
+        result = await queue_service.enqueue(state, entry)
 
-        if not is_playing:
-            await state._play_entry(entry)
+        if result.started_now:
             embed = discord.Embed(
                 title="Now Playing",
                 description=f"[{entry.title}]({entry.webpage_url or '#'})",
@@ -710,9 +708,8 @@ class Music(commands.Cog):
             embed.add_field(name="Uploader", value=entry.uploader or "Unknown", inline=True)
             embed.set_footer(text=f"Requested by {interaction.user.display_name}")
         else:
-            state.queue.append(entry)
             embed = discord.Embed(
-                description=f"Added to queue at position **#{len(state.queue)}**",
+                description=f"Added to queue at position **#{result.position}**",
                 color=discord.Color.blurple(),
             )
             embed.add_field(name="Track", value=f"[{entry.title}]({entry.webpage_url or '#'})", inline=False)
@@ -730,10 +727,9 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def skip(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        if not state.voice_client or not state.voice_client.is_playing():
+        if not queue_service.skip(state):  # triggers after → play_next
             await interaction.response.send_message(embed=self._err("Nothing is currently playing."), ephemeral=True)
             return
-        state.voice_client.stop()  # triggers after → play_next
         await interaction.response.send_message(embed=self._ok("Skipped!"), ephemeral=True)
 
     # ------------------------------------------------------------------
@@ -744,10 +740,9 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def stop(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        if not state.voice_client:
+        if not queue_service.stop(state):
             await interaction.response.send_message(embed=self._err("Not connected to a voice channel."), ephemeral=True)
             return
-        state.cleanup()
         await interaction.response.send_message(embed=self._ok("Stopped and cleared the queue."), ephemeral=True)
 
     # ------------------------------------------------------------------
@@ -758,10 +753,9 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def leave(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        if not state.voice_client:
+        if not queue_service.stop(state):
             await interaction.response.send_message(embed=self._err("Not connected to a voice channel."), ephemeral=True)
             return
-        state.cleanup()
         await state.voice_client.disconnect()
         state.voice_client = None
         await interaction.response.send_message(embed=self._ok("Disconnected."), ephemeral=True)
@@ -774,7 +768,8 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def queue_cmd(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        view = QueueView(list(state.queue), state.current)
+        current, entries = queue_service.snapshot(state)
+        view = QueueView(entries, current)
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     # ------------------------------------------------------------------
@@ -785,11 +780,11 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def shuffle(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        if not state.queue:
+        count = queue_service.shuffle(state)
+        if count < 0:
             await interaction.response.send_message(embed=self._err("The queue is empty."), ephemeral=True)
             return
-        random.shuffle(state.queue)
-        await interaction.response.send_message(embed=self._ok(f"Shuffled {len(state.queue)} track(s)."), ephemeral=True)
+        await interaction.response.send_message(embed=self._ok(f"Shuffled {count} track(s)."), ephemeral=True)
 
     # ------------------------------------------------------------------
     # /loop
@@ -799,8 +794,8 @@ class Music(commands.Cog):
     @slash_designated_role()
     async def loop_cmd(self, interaction: discord.Interaction):
         state = self._state(interaction.guild)
-        state.loop_mode = state.loop_mode + 1
-        label = LOOP_LABELS[state.loop_mode]
+        new_mode = queue_service.cycle_loop(state)
+        label = LOOP_LABELS[new_mode]
         await interaction.response.send_message(
             embed=self._ok(f"Loop mode set to **{label}**."), ephemeral=True
         )
