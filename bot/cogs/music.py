@@ -142,6 +142,12 @@ def _fmt_seconds(seconds: Optional[int]) -> str:
     h, m = divmod(m, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
+
+def _short(text: Optional[str], limit: int = 55) -> str:
+    """Trim a display title so embed fields stay within Discord's limits."""
+    text = text or ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
 SPOTIFY_RE = re.compile(r"https?://open\.spotify\.com/(track|album|playlist)/([A-Za-z0-9]+)")
 DIRECT_AUDIO_RE = re.compile(r"\.(mp3|wav|m4a|ogg|flac|opus|aac)(\?.*)?$", re.IGNORECASE)
 SOUNDCLOUD_RE = re.compile(r"https?://(www\.)?soundcloud\.com/", re.IGNORECASE)
@@ -380,7 +386,7 @@ class QueueView(discord.ui.View):
         if self.current:
             embed.add_field(
                 name="Now Playing",
-                value=f"[{self.current.title}]({self.current.webpage_url or '#'}) `{self.current.fmt_duration()}`",
+                value=f"[{_short(self.current.title)}]({self.current.webpage_url or '#'}) `{self.current.fmt_duration()}`"[:1024],
                 inline=False,
             )
 
@@ -389,10 +395,13 @@ class QueueView(discord.ui.View):
 
         if page_items:
             lines = [
-                f"`{start + i + 1}.` [{e.title}]({e.webpage_url or '#'}) `{e.fmt_duration()}`"
+                f"`{start + i + 1}.` [{_short(e.title)}]({e.webpage_url or '#'}) `{e.fmt_duration()}`"
                 for i, e in enumerate(page_items)
             ]
-            embed.add_field(name="Up Next", value="\n".join(lines), inline=False)
+            value = "\n".join(lines)
+            if len(value) > 1024:
+                value = value[:1023] + "…"
+            embed.add_field(name="Up Next", value=value, inline=False)
         else:
             embed.add_field(name="Up Next", value="Queue is empty.", inline=False)
 
@@ -728,6 +737,15 @@ class Music(commands.Cog):
         st = self._active_state()
         return st.position_seconds() if st else None
 
+    async def resolve_metadata(self, query: str) -> Optional[dict]:
+        """Best-effort resolve of a pasted link/search to display metadata, so
+        the web 'add by link' path can show a real title instead of the URL."""
+        try:
+            data = await _ytdl_extract_with_fallback(query)
+        except Exception:
+            return None
+        return {"title": data.get("title"), "artist": data.get("uploader")}
+
     def _err(self, msg: str) -> discord.Embed:
         return discord.Embed(description=f"❌ {msg}", color=discord.Color.red())
 
@@ -742,7 +760,7 @@ class Music(commands.Cog):
             return
         logger.error(f"Music command error: {error}", exc_info=True)
         if not interaction.response.is_done():
-            await interaction.response.send_message(self._err("An unexpected error occurred."), ephemeral=True)
+            await interaction.response.send_message(embed=self._err("An unexpected error occurred."), ephemeral=True)
 
     # ------------------------------------------------------------------
     # Voice channel guard

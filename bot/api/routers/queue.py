@@ -108,6 +108,14 @@ async def add_to_queue(
             raise HTTPException(status_code=404, detail="Track not found")
         title = title or track.title
         artist = artist or track.artist
+    elif body.source_url and not title:
+        # Pasted link with no title — resolve it so the queue shows a real name.
+        controller = playback.get_controller()
+        if controller is not None:
+            meta = await controller.resolve_metadata(body.source_url)
+            if meta:
+                title = meta.get("title") or title
+                artist = artist or meta.get("artist")
 
     item, started = await queue_service.add(
         db,
